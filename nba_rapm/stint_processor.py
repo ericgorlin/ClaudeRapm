@@ -471,6 +471,7 @@ def process_season_stints(
     season_type: str = "Regular Season",
     cache_dir: Optional[str] = None,
     force_refresh: bool = False,
+    max_games: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     Convenience function to process all stints for a season.
@@ -480,6 +481,7 @@ def process_season_stints(
         season_type: "Regular Season" or "Playoffs"
         cache_dir: Optional cache directory
         force_refresh: If True, re-fetch and reprocess
+        max_games: Limit number of games (for testing)
 
     Returns:
         DataFrame with all stints for the season
@@ -489,21 +491,21 @@ def process_season_stints(
     fetcher = NBADataFetcher(cache_dir=cache_dir if cache_dir else None)
     processor = StintProcessor()
 
-    # Check for cached stint data
+    # Check for cached stint data (only use cache if not limiting games)
     stints_cache = fetcher.cache_dir / "stints" / f"stints_{season}_{season_type.replace(' ', '_')}.parquet"
     stints_cache.parent.mkdir(exist_ok=True)
 
-    if stints_cache.exists() and not force_refresh:
+    if stints_cache.exists() and not force_refresh and max_games is None:
         return pd.read_parquet(stints_cache)
 
     # Fetch PBP data
-    pbp_data = fetcher.fetch_season_pbp(season, season_type, force_refresh)
+    pbp_data = fetcher.fetch_season_pbp(season, season_type, force_refresh, max_games=max_games)
 
     # Process into stints
     stints_df = processor.process_multiple_games(pbp_data)
 
-    # Cache results
-    if not stints_df.empty:
+    # Cache results (only if not limiting games)
+    if not stints_df.empty and max_games is None:
         stints_df.to_parquet(stints_cache)
 
     return stints_df
