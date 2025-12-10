@@ -6,7 +6,7 @@ Generates Regularized Adjusted Plus-Minus (RAPM) statistics
 with offensive and defensive splits per 100 possessions.
 
 Usage:
-    # Generate RAPM for a single season
+    # Generate RAPM for a single season (includes playoffs by default)
     python generate_rapm.py --season 2023-24
 
     # Generate RAPM for multiple seasons
@@ -15,11 +15,14 @@ Usage:
     # Generate RAPM for all available seasons (1996-97 onwards)
     python generate_rapm.py --all-seasons
 
-    # Include playoffs
-    python generate_rapm.py --season 2023-24 --include-playoffs
+    # Exclude playoffs (regular season only)
+    python generate_rapm.py --season 2023-24 --no-playoffs
 
     # Custom regularization
     python generate_rapm.py --season 2023-24 --ridge-lambda 5000
+
+    # Run a quick end-to-end test with limited data
+    python generate_rapm.py --test
 """
 
 import argparse
@@ -62,22 +65,24 @@ def get_available_seasons(start_year: int = 1996) -> List[str]:
 
 def generate_single_season_rapm(
     season: str,
-    include_playoffs: bool = False,
+    include_playoffs: bool = True,
     ridge_lambda: float = 2500.0,
     min_player_possessions: float = 100.0,
     output_dir: Optional[Path] = None,
     force_refresh: bool = False,
+    max_games: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     Generate RAPM for a single season.
 
     Args:
         season: Season string like "2023-24"
-        include_playoffs: Whether to include playoff data
+        include_playoffs: Whether to include playoff data (default: True)
         ridge_lambda: Regularization parameter
         min_player_possessions: Minimum possessions for player inclusion
         output_dir: Directory to save results
         force_refresh: Force re-fetch of data
+        max_games: Limit number of games per season type (for testing)
 
     Returns:
         DataFrame with RAPM results
@@ -87,17 +92,17 @@ def generate_single_season_rapm(
     # Process regular season stints
     logger.info(f"Processing regular season stints for {season}...")
     regular_stints = process_season_stints(
-        season, "Regular Season", force_refresh=force_refresh
+        season, "Regular Season", force_refresh=force_refresh, max_games=max_games
     )
 
     all_stints = [regular_stints]
 
-    # Optionally add playoffs
+    # Include playoffs by default
     if include_playoffs:
         logger.info(f"Processing playoff stints for {season}...")
         try:
             playoff_stints = process_season_stints(
-                season, "Playoffs", force_refresh=force_refresh
+                season, "Playoffs", force_refresh=force_refresh, max_games=max_games
             )
             if not playoff_stints.empty:
                 all_stints.append(playoff_stints)
@@ -142,7 +147,7 @@ def generate_single_season_rapm(
 
 def generate_multi_season_rapm(
     seasons: List[str],
-    include_playoffs: bool = False,
+    include_playoffs: bool = True,
     ridge_lambda: float = 2500.0,
     min_player_possessions: float = 250.0,  # Higher for multi-season
     output_dir: Optional[Path] = None,
@@ -154,7 +159,7 @@ def generate_multi_season_rapm(
 
     Args:
         seasons: List of season strings
-        include_playoffs: Whether to include playoff data
+        include_playoffs: Whether to include playoff data (default: True)
         ridge_lambda: Regularization parameter
         min_player_possessions: Minimum possessions for player inclusion
         output_dir: Directory to save results
@@ -235,7 +240,7 @@ def generate_multi_season_rapm(
 
 def generate_all_seasons_rapm(
     start_season: str = "1996-97",
-    include_playoffs: bool = False,
+    include_playoffs: bool = True,
     ridge_lambda: float = 2500.0,
     min_player_possessions: float = 100.0,
     output_dir: Optional[Path] = None,
@@ -279,6 +284,103 @@ def generate_all_seasons_rapm(
         logger.info(f"Saved combined results to {combined_file}")
 
     return results
+
+
+def run_e2e_test(season: str = "2023-24", max_games: int = 5) -> bool:
+    """
+    Run a small end-to-end test of the full pipeline.
+
+    This fetches a limited amount of data to verify the entire pipeline works:
+    1. Fetch game data from NBA API
+    2. Fetch play-by-play data for a few games
+    3. Process stints
+    4. Run RAPM solver
+    5. Verify output format
+
+    Args:
+        season: Season to test with
+        max_games: Number of games to fetch per season type
+
+    Returns:
+        True if test passed, False otherwise
+    """
+    print("\n" + "=" * 80)
+    print(f"RUNNING END-TO-END TEST (season={season}, max_games={max_games})")
+    print("=" * 80 + "\n")
+
+    try:
+        # Step 1: Generate RAPM with limited data
+        print(f"[1/5] Fetching regular season data ({max_games} games)...")
+        regular_stints = process_season_stints(
+            season, "Regular Season", force_refresh=False, max_games=max_games
+        )
+        print(f"      ✓ Got {len(regular_stints)} regular season stints")
+
+        # Step 2: Fetch playoff data
+        print(f"[2/5] Fetching playoff data ({max_games} games)...")
+        try:
+            playoff_stints = process_season_stints(
+                season, "Playoffs", force_refresh=False, max_games=max_games
+            )
+            print(f"      ✓ Got {len(playoff_stints)} playoff stints")
+        except Exception as e:
+            print(f"      ⚠ No playoff data available: {e}")
+            playoff_stints = pd.DataFrame()
+
+        # Step 3: Combine stints
+        print("[3/5] Processing stints...")
+        all_stints = [regular_stints]
+        if not playoff_stints.empty:
+            all_stints.append(playoff_stints)
+        combined_stints = pd.concat(all_stints, ignore_index=True)
+        print(f"      ✓ Combined {len(combined_stints)} total stints")
+
+        # Step 4: Run RAPM solver (with lower min possessions for test)
+        print("[4/5] Running RAPM solver...")
+        config = RAPMConfig(
+            ridge_lambda=2500.0,
+            min_player_possessions=1.0,  # Very low for test
+        )
+        solver = RAPMSolver(config=config)
+        result = solver.solve(combined_stints)
+        print(f"      ✓ Solved for {result.n_players} players")
+        print(f"      ✓ O-R²={result.offensive_r2:.4f}, D-R²={result.defensive_r2:.4f}")
+
+        # Step 5: Verify output format
+        print("[5/5] Verifying output format...")
+        df = result.to_dataframe()
+        df = add_player_names(df)
+
+        required_columns = ["player_id", "player_name", "offensive_rapm", "defensive_rapm", "total_rapm"]
+        for col in required_columns:
+            if col not in df.columns:
+                raise ValueError(f"Missing required column: {col}")
+
+        # Basic sanity checks
+        assert len(df) > 0, "No players in output"
+        assert not df["total_rapm"].isna().all(), "All RAPM values are NaN"
+        assert df["total_rapm"].abs().max() < 100, "RAPM values unreasonably large"
+
+        print(f"      ✓ Output has {len(df)} players with all required columns")
+
+        # Show a sample of results
+        print("\n" + "-" * 60)
+        print("SAMPLE RESULTS (top 5 by total RAPM):")
+        print("-" * 60)
+        top5 = df.nlargest(5, "total_rapm")
+        for _, row in top5.iterrows():
+            print(f"  {row['player_name']:<25} O:{row['offensive_rapm']:>+6.2f}  D:{row['defensive_rapm']:>+6.2f}  T:{row['total_rapm']:>+6.2f}")
+
+        print("\n" + "=" * 80)
+        print("✓ END-TO-END TEST PASSED")
+        print("=" * 80 + "\n")
+        return True
+
+    except Exception as e:
+        print(f"\n✗ TEST FAILED: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def print_top_players(df: pd.DataFrame, n: int = 20) -> None:
@@ -330,6 +432,10 @@ def main():
     season_group.add_argument(
         "--all-seasons", action="store_true", help="Analyze all available seasons"
     )
+    season_group.add_argument(
+        "--test", action="store_true",
+        help="Run end-to-end test with limited data (5 games per season type)"
+    )
 
     parser.add_argument(
         "--start-season", type=str, default="1996-97",
@@ -339,10 +445,12 @@ def main():
         "--end-season", type=str, help="End season for range"
     )
 
-    # Options
+    # Playoffs options (playoffs included by default)
     parser.add_argument(
-        "--include-playoffs", action="store_true", help="Include playoff games"
+        "--no-playoffs", action="store_true",
+        help="Exclude playoff games (playoffs are included by default)"
     )
+
     parser.add_argument(
         "--ridge-lambda", type=float, default=2500.0,
         help="Ridge regularization parameter (default: 2500)"
@@ -367,16 +475,28 @@ def main():
         "--top-n", type=int, default=20,
         help="Number of top players to display (default: 20)"
     )
+    parser.add_argument(
+        "--test-games", type=int, default=5,
+        help="Number of games to fetch in test mode (default: 5)"
+    )
 
     args = parser.parse_args()
 
+    # Determine if playoffs should be included (default: True, unless --no-playoffs)
+    include_playoffs = not args.no_playoffs
+
     output_dir = Path(args.output_dir)
+
+    # Handle test mode
+    if args.test:
+        success = run_e2e_test(season="2023-24", max_games=args.test_games)
+        sys.exit(0 if success else 1)
 
     if args.all_seasons:
         # Generate for all seasons
         results = generate_all_seasons_rapm(
             start_season=args.start_season,
-            include_playoffs=args.include_playoffs,
+            include_playoffs=include_playoffs,
             ridge_lambda=args.ridge_lambda,
             min_player_possessions=args.min_possessions,
             output_dir=output_dir,
@@ -393,7 +513,7 @@ def main():
         # Single season
         df = generate_single_season_rapm(
             season=args.season,
-            include_playoffs=args.include_playoffs,
+            include_playoffs=include_playoffs,
             ridge_lambda=args.ridge_lambda,
             min_player_possessions=args.min_possessions,
             output_dir=output_dir,
@@ -413,7 +533,7 @@ def main():
             # Combine into single RAPM calculation
             df = generate_multi_season_rapm(
                 seasons=seasons,
-                include_playoffs=args.include_playoffs,
+                include_playoffs=include_playoffs,
                 ridge_lambda=args.ridge_lambda,
                 min_player_possessions=args.min_possessions,
                 output_dir=output_dir,
@@ -427,7 +547,7 @@ def main():
             for season in seasons:
                 df = generate_single_season_rapm(
                     season=season,
-                    include_playoffs=args.include_playoffs,
+                    include_playoffs=include_playoffs,
                     ridge_lambda=args.ridge_lambda,
                     min_player_possessions=args.min_possessions,
                     output_dir=output_dir,
@@ -449,7 +569,7 @@ def main():
 
         df = generate_single_season_rapm(
             season=current_season,
-            include_playoffs=args.include_playoffs,
+            include_playoffs=include_playoffs,
             ridge_lambda=args.ridge_lambda,
             min_player_possessions=args.min_possessions,
             output_dir=output_dir,
