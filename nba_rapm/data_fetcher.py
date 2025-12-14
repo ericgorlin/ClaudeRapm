@@ -29,6 +29,23 @@ logger = logging.getLogger(__name__)
 # Default cache directory
 DEFAULT_CACHE_DIR = Path(__file__).parent.parent / "data" / "cache"
 
+# Headers to mimic browser requests (required by NBA API)
+NBA_API_HEADERS = {
+    "Host": "stats.nba.com",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate, br",
+    "x-nba-stats-origin": "stats",
+    "x-nba-stats-token": "true",
+    "Connection": "keep-alive",
+    "Referer": "https://stats.nba.com/",
+    "Origin": "https://stats.nba.com",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+}
+
 
 class NBADataFetcher:
     """Fetches and caches NBA game and play-by-play data."""
@@ -78,6 +95,8 @@ class NBADataFetcher:
                 season=season,
                 season_type_all_star=season_type,
                 player_or_team_abbreviation="T",
+                headers=NBA_API_HEADERS,
+                timeout=30,
             )
             df = game_log.get_data_frames()[0]
 
@@ -107,7 +126,11 @@ class NBADataFetcher:
         self._rate_limit()
 
         try:
-            pbp = playbyplayv2.PlayByPlayV2(game_id=game_id)
+            pbp = playbyplayv2.PlayByPlayV2(
+                game_id=game_id,
+                headers=NBA_API_HEADERS,
+                timeout=30,
+            )
             df = pbp.get_data_frames()[0]
 
             # Save to cache
@@ -137,7 +160,11 @@ class NBADataFetcher:
         self._rate_limit()
 
         try:
-            boxscore = boxscoreadvancedv3.BoxScoreAdvancedV3(game_id=game_id)
+            boxscore = boxscoreadvancedv3.BoxScoreAdvancedV3(
+                game_id=game_id,
+                headers=NBA_API_HEADERS,
+                timeout=30,
+            )
             dfs = boxscore.get_data_frames()
 
             # Combine player and team stats
